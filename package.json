@@ -1,0 +1,1 @@
+{"private":true,"type":"module","scripts":{"build":"node build.mjs","test":"node --test test.mjs auth.test.mjs auth-qq.test.mjs auth-wechat.test.mjs qr.test.mjs browse.test.mjs library.test.mjs qrc.test.mjs"},"devDependencies":{"esbuild":"^0.28.2","jpeg-js":"^0.4.4","jsqr":"^1.4.0","pako":"^3.0.3","qrcode":"^1.5.4"}}
