@@ -14763,6 +14763,7 @@ function createLibrary({ qqAuthRpc: qqAuthRpc2, qqReadSession: qqReadSession2, q
     return data;
   }
   const hasMore = (p) => p.hasmore === true || Number(p.hasmore) === 1;
+  const editable = (p) => Number(p.dirId) > 0 && Number(p.dirId) < 200 && Number(p.dirType ?? 0) === 0;
   const asPlaylist = (p, mine = false) => ({ id: String(p.tid || p.dissid || p.id || ""), name: p.dirName || p.title || p.dissname || p.name || "", imageUrl: p.bigpicUrl || p.picUrl || p.picurl || p.coverUrl || p.logo || p.albumPicUrl || "", description: p.desc || "", trackCount: Number(p.songNum || p.songnum || p.song_cnt || p.total_song_num || 0), mine });
   const owned = async (s) => array((await call(s, "music.musicasset.PlaylistBaseRead", "GetPlaylistByUin", { uin: s.musicid })).v_playlist, "playlists");
   async function encrypted(s) {
@@ -14778,7 +14779,7 @@ function createLibrary({ qqAuthRpc: qqAuthRpc2, qqReadSession: qqReadSession2, q
     const n = idNumber(id, "playlist ID");
     const matches = (await owned(s)).filter((p2) => String(p2.tid) === String(n));
     const p = matches[0];
-    if (matches.length !== 1 || !Number.isInteger(Number(p.dirId)) || Number(p.dirId) <= 0 || Number(p.dirId) >= 200 || Number(p.dirType) !== 0 || p.uin && String(p.uin) !== String(s.musicid)) throw new Error("Only owned ordinary playlists can be edited");
+    if (matches.length !== 1 || !Number.isInteger(Number(p.dirId)) || !editable(p) || p.uin && String(p.uin) !== String(s.musicid)) throw new Error("Only owned ordinary playlists can be edited");
     return { id: n, dir: Number(p.dirId), entry: p };
   }
   async function write(s, module, method, param) {
@@ -14820,7 +14821,7 @@ function createLibrary({ qqAuthRpc: qqAuthRpc2, qqReadSession: qqReadSession2, q
     const s = await account2(true);
     if (!s) return [];
     const euin = await encrypted(s);
-    const own = (await owned(s)).map((p) => asPlaylist(p, Number(p.dirId) > 0 && Number(p.dirId) < 200 && Number(p.dirType) === 0)).filter((p) => p.id);
+    const own = (await owned(s)).map((p) => asPlaylist(p, editable(p))).filter((p) => p.id);
     const saved = [], seen = /* @__PURE__ */ new Set();
     for (let offset = 0; offset < 1e4; ) {
       const page = await call(s, "music.musicasset.PlaylistFavRead", "CgiGetPlaylistFavInfo", { uin: euin, offset, size: 100 });
@@ -14869,7 +14870,7 @@ function createLibrary({ qqAuthRpc: qqAuthRpc2, qqReadSession: qqReadSession2, q
       if (items.length) seen.add(items[0].id);
       result.push(...items);
       const total = Number(data.total_song_num || 0);
-      if (!hasMore(data) && (total === 0 || result.length >= total)) return { ...asPlaylist({ ...first.dirinfo || {}, tid: pid, total_song_num: first.total_song_num }, Number(entry.dirId) > 0 && Number(entry.dirId) < 200 && Number(entry.dirType) === 0), tracks: result };
+      if (!hasMore(data) && (total === 0 || result.length >= total)) return { ...asPlaylist({ ...first.dirinfo || {}, tid: pid, total_song_num: first.total_song_num }, editable(entry)), tracks: result };
       if (!items.length) throw new Error("QQ Music playlist incomplete");
       offset += items.length;
     }

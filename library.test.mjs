@@ -187,3 +187,18 @@ test('album errors do not masquerade as success', async () => {
   await assert.rejects(lib.savedAlbums(), /incomplete/);
   await assert.rejects(lib.saveAlbum({ id: 'AlbumMID', on: true }), /confirm/);
 });
+
+test('playlists without dirType (current QQ response) are editable', async () => {
+  const bare = { tid: 900, dirId: 12, dirName: 'Mine', uin: '10001' };
+  const { lib } = setup((method, p) => {
+    if (method === 'GetPlaylistByUin') return { v_playlist: [bare, { tid: 901, dirId: 201, dirName: 'Liked' }] };
+    if (method === 'CgiGetPlaylistFavInfo') return { v_list: [], hasmore: 0 };
+    if (method === 'AddPlaylist') return ok;
+    if (method === 'get_song_detail_yqq') return { track_info: { mid: p.song_mid, id: 42 } };
+    if (method === 'AddSonglist') return ok;
+    throw new Error(method);
+  });
+  assert.deepEqual((await lib.playlists()).map(p => [p.id, p.mine]), [['900', true], ['901', false]]);
+  assert.equal((await lib.createPlaylist({ name: 'Mine' })).id, '900');
+  await lib.addToPlaylist({ id: '900', trackIds: ['song1'] });
+});
