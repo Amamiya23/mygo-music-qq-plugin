@@ -14714,6 +14714,10 @@ function decodeEntities(text) {
   });
 }
 var qqBrowse = createBrowse({ rpc, cgi, trackOf, t: (text) => host.t(text) });
+function recommendedPlaylists(cards) {
+  const seen = /* @__PURE__ */ new Set();
+  return cards.filter((card) => card.type === 500 && (card.subtype === 0 || card.subtype === 510) && card.jumptype === 10014 && /^[1-9]\d*$/.test(String(card.id)) && !seen.has(String(card.id)) && seen.add(String(card.id))).sort((a, b) => (b.subtype === 510) - (a.subtype === 510)).map((card) => ({ id: String(card.id), name: card.title || "", imageUrl: card.cover || "" }));
+}
 async function home() {
   const page = await qqBrowse.home();
   const session3 = qqReadSession();
@@ -14723,8 +14727,7 @@ async function home() {
     const feed = await rpc("music.recommend.RecommendFeed", "get_recommend_feed", { direction: 0, page: 1, s_num: 0, v_cache: [] }, comm2);
     if (feed.retcode !== 0 || !Array.isArray(feed.v_shelf)) throw new Error("QQ Music: malformed personal recommendations");
     const cards = feed.v_shelf.flatMap((shelf) => shelf.v_niche || []).flatMap((niche) => niche.v_card || []);
-    const seen = /* @__PURE__ */ new Set();
-    const playlists2 = cards.filter((card) => card.type === 500 && card.subtype === 0 && card.jumptype === 10014 && /^[1-9]\d*$/.test(String(card.id)) && !seen.has(String(card.id)) && seen.add(String(card.id))).map((card) => ({ id: String(card.id), name: card.title || "", imageUrl: card.cover || "" }));
+    const playlists2 = recommendedPlaylists(cards);
     if (playlists2.length) page.sections.unshift({ title: host.t("Recommended for You"), playlists: playlists2 });
   } catch (error) {
     console.warn(`QQ Music recommendations: ${error.message}`);
@@ -15792,6 +15795,7 @@ export {
   qqAuthRpc,
   qqFinishSignIn,
   qqReadSession,
+  recommendedPlaylists,
   removeFromPlaylist,
   renamePlaylist,
   saveAlbum,
