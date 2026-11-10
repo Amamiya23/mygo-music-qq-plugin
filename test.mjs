@@ -216,6 +216,19 @@ test('home adds the signed-in recommendation feed', async () => {
   assert.equal(result.sections[0].playlists[0].id, '100');
 });
 
+test('Daily 30 comes first in recommended playlists', () => {
+  const card = (id, subtype, title, extra = {}) => ({ type: 500, subtype, jumptype: 10014, id, title, cover: `${id}.jpg`, ...extra });
+  const result = plugin.recommendedPlaylists([
+    card('111', 0, 'First'),
+    card('222', 510, '每日30首'),
+    card('333', 513, 'Not a playlist', { jumptype: 3003 }),
+    card('111', 0, 'Duplicate'),
+    card('444', 0, 'Second'),
+  ]);
+  assert.deepEqual(result.map(p => [p.id, p.name]), [['222', '每日30首'], ['111', 'First'], ['444', 'Second']]);
+  assert.equal(result[0].imageUrl, '222.jpg');
+});
+
 test('lyrics surfaces HTTP errors', async () => {
   respond = () => response({ message: 'unavailable' }, 503);
   await assert.rejects(() => plugin.lyrics({ id: mid }));
