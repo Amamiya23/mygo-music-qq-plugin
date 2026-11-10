@@ -568,11 +568,22 @@ export function createLibrary({ qqAuthRpc, qqReadSession, qqAuthCgi, cgi, trackO
     }
     return result;
   }
-  const tracks = items => array(items, 'song list').map(item => {
-    const track = trackOf(item);
-    if (!track.id) throw new Error('QQ Music missing song MID');
-    return track;
-  });
+  // Songs uploaded from local files have no MID and cannot be streamed.
+  const playable = items => array(items, 'song list').map(trackOf).filter(track => track.id);
+  // One request covers up to 1000 songs, so the app can shuffle a whole list.
+  // QQ can return fewer rows than requested or than its total, so advance by the requested size and trust hasmore.
+  async function allSongs(s, disstid, dirid, euin, start = 0) {
+    const size = 1000, result = [], seen = new Set();
+    let first;
+    for (let begin = start; begin < start + 100000; begin += size) {
+      const page = checked(await call(s, 'music.srfDissInfo.DissInfo', 'CgiGetDiss', { disstid, dirid, tag: true, song_begin: begin, song_num: size, userinfo: true, orderlist: true, ...(euin ? { enc_host_uin: euin } : {}) }));
+      first ||= page;
+      for (const track of playable(page.songlist)) if (!seen.has(track.id)) { seen.add(track.id); result.push(track); }
+      if (!hasMore(page)) return { first, tracks: result };
+      if (!page.songlist.length) break;
+    }
+    throw new Error('QQ Music song list incomplete');
+  }
   function validName(name) {
     if (typeof name !== 'string' || !name.trim() || [...name].length > 20 || /[\u0000-\u001f\u007f-\u009f]/.test(name)) throw new Error('Invalid playlist name');
   }
@@ -580,7 +591,8 @@ export function createLibrary({ qqAuthRpc, qqReadSession, qqAuthCgi, cgi, trackO
     const s = await account(true);
     if (!s) return [];
     const euin = await encrypted(s);
-    const own = (await owned(s)).map(p => asPlaylist(p, editable(p))).filter(p => p.id);
+    // dirId 201 is Liked Songs, which the app already lists on its own.
+    const own = (await owned(s)).filter(p => Number(p.dirId) !== 201).map(p => asPlaylist(p, editable(p))).filter(p => p.id);
     const saved = [], seen = new Set();
     for (let offset = 0; offset < 10000;) {
       const page = await call(s, 'music.musicasset.PlaylistFavRead', 'CgiGetPlaylistFavInfo', { uin: euin, offset, size: 100 });
@@ -599,45 +611,22 @@ export function createLibrary({ qqAuthRpc, qqReadSession, qqAuthCgi, cgi, trackO
   async function liked({ offset = 0 } = {}) {
     const s = await account(), euin = await encrypted(s);
     if (!Number.isSafeInteger(offset) || offset < 0) throw new Error('Invalid offset');
-    const page = checked(await call(s, 'music.srfDissInfo.DissInfo', 'CgiGetDiss', { disstid: 0, dirid: 201, tag: true, song_begin: offset, song_num: 20, userinfo: true, orderlist: true, enc_host_uin: euin }));
-    const result = tracks(page.songlist);
-    if (hasMore(page) && !result.length) throw new Error('QQ Music liked songs incomplete');
-    return { tracks: result, more: hasMore(page) };
+    return { tracks: (await allSongs(s, 0, 201, euin, offset)).tracks, more: false };
   }
   async function playlist({ id }) {
     const pid = idNumber(id, 'playlist ID');
     const s = await account();
     const entry = (await owned(s)).find(p => String(p.tid) === String(pid));
-    const legacy = async () => {
+    try {
+      const { first, tracks } = await allSongs(s, pid, 0, await encrypted(s));
+      return { ...asPlaylist({ ...(first.dirinfo || {}), tid: pid, total_song_num: first.total_song_num }, !!entry && editable(entry)), tracks };
+    } catch (error) {
+      if (entry) throw error;
       const body = await cgi('/qzone/fcg-bin/fcg_ucc_getcdinfo_byids_cp.fcg', { disstid: pid, type: 1, json: 1, utf8: 1, onlysong: 0, new_format: 1 });
       const info = array(body.cdlist, 'playlist')[0];
       if (!info) throw new Error('QQ Music playlist unavailable');
-      return { ...asPlaylist({ ...info, tid: pid }), tracks: tracks(info.songlist) };
-    };
-    try {
-      return await paged(s, pid, entry);
-    } catch (error) {
-      if (entry) throw error;
-      return legacy();
+      return { ...asPlaylist({ ...info, tid: pid }), tracks: playable(info.songlist) };
     }
-  }
-  async function paged(s, pid, entry) {
-    const euin = await encrypted(s), result = [], seen = new Set();
-    let first;
-    for (let offset = 0; offset < 10000;) {
-      const data = checked(await call(s, 'music.srfDissInfo.DissInfo', 'CgiGetDiss', { disstid: pid, dirid: 0, tag: true, song_begin: offset, song_num: 100, userinfo: true, orderlist: true, enc_host_uin: euin }));
-      first ||= data;
-      const items = tracks(data.songlist);
-      if (!items.length && hasMore(data)) throw new Error('QQ Music playlist incomplete');
-      if (items.length && seen.has(items[0].id)) throw new Error('QQ Music playlist paging repeated');
-      if (items.length) seen.add(items[0].id);
-      result.push(...items);
-      const total = Number(data.total_song_num || 0);
-      if (!hasMore(data) && (total === 0 || result.length >= total)) return { ...asPlaylist({ ...(first.dirinfo || {}), tid: pid, total_song_num: first.total_song_num }, !!entry && editable(entry)), tracks: result };
-      if (!items.length) throw new Error('QQ Music playlist incomplete');
-      offset += items.length;
-    }
-    throw new Error('QQ Music playlist incomplete');
   }
   async function isLiked({ ids }) {
     if (!Array.isArray(ids)) throw new Error('Invalid song IDs');

@@ -8,7 +8,7 @@ function setup(handler, session = signed, options = {}) {
   const lib = createLibrary({
     qqReadSession: () => session,
     qqAuthRpc: async (module, method, param, s) => { calls.push({ module, method, param }); assert.equal(s, session); return handler(method, param); },
-    cgi: async () => ({ cdlist: [{ dissname: 'Public', songlist: [{ mid: 'song1' }] }] }),
+    cgi: options.cgi || (async () => ({ cdlist: [{ dissname: 'Public', songlist: [{ mid: 'song1' }] }] })),
     qqAuthCgi: options.qqAuthCgi,
     fetch: options.fetch,
     trackOf: t => ({ id: t.mid, name: t.name || '' }),
@@ -35,13 +35,21 @@ test('playlists combines owned and paginated favorites', async () => {
   assert.deepEqual((await lib.playlists()).map(p => [p.id, p.name, p.mine]), [['900', 'Mine', true], ['901', 'Saved', false], ['902', 'Next', false]]);
 });
 
-test('liked forwards offset and validates song list', async () => {
-  const { lib } = setup((method, p) => {
+test('liked loads every page in one call and skips songs without a MID', async () => {
+  const { lib, calls } = setup((method, p) => {
     assert.equal(method, 'CgiGetDiss');
-    assert.equal(p.song_begin, 20); assert.equal(p.enc_host_uin, 'encrypted');
-    return { songlist: [{ mid: 'song1' }], hasmore: 1 };
+    assert.equal(p.song_num, 1000); assert.equal(p.enc_host_uin, 'encrypted');
+    return p.song_begin === 20
+      ? { songlist: [{ mid: 'song1' }, { mid: '', title: 'Uploaded file' }], hasmore: 1 }
+      : { songlist: [{ mid: 'song1' }, { mid: 'song2' }], hasmore: 0 };
   });
-  assert.deepEqual(await lib.liked({ offset: 20 }), { tracks: [{ id: 'song1', name: '' }], more: true });
+  assert.deepEqual(await lib.liked({ offset: 20 }), { tracks: [{ id: 'song1', name: '' }, { id: 'song2', name: '' }], more: false });
+  assert.deepEqual(calls.map(c => c.param.song_begin), [20, 1020]);
+});
+
+test('liked rejects an empty page that claims more songs', async () => {
+  const { lib } = setup(() => ({ songlist: [], hasmore: 1 }));
+  await assert.rejects(lib.liked({}), /incomplete/);
 });
 
 test('like resolves MID to numeric song ID and confirms state', async () => {
@@ -70,12 +78,13 @@ test('playlist edit resolves owned directory and rejects system lists', async ()
   assert.equal(calls.filter(c => c.method === 'AddSonglist').length, 1);
 });
 
-test('playlist pages and public response map tracks', async () => {
+test('owned and saved playlists load every authenticated page before public CGI', async () => {
   const { lib } = setup((method, p) => {
     if (method === 'GetPlaylistByUin') return { v_playlist: [own] };
     assert.equal(method, 'CgiGetDiss');
+    assert.equal(p.enc_host_uin, 'encrypted');
     return { dirinfo: { title: 'Mine' }, total_song_num: 2, songlist: [{ mid: p.song_begin ? 'song2' : 'song1' }], hasmore: p.song_begin ? 0 : 1 };
-  });
+  }, signed, { cgi: async () => { assert.fail('authenticated playlists must not use public CGI'); } });
   assert.deepEqual((await lib.playlist({ id: '900' })).tracks.map(t => t.id), ['song1', 'song2']);
   const saved = await lib.playlist({ id: '901' });
   assert.deepEqual([saved.name, saved.mine, saved.tracks.map(t => t.id)], ['Mine', false, ['song1', 'song2']]);
@@ -126,11 +135,11 @@ test('create and delete verify the account playlist listing', async () => {
 
 test('system playlist is not editable and inner errors are rejected', async () => {
   const { lib } = setup(method => {
-    if (method === 'GetPlaylistByUin') return { v_playlist: [{ ...own, dirId: 201 }] };
+    if (method === 'GetPlaylistByUin') return { v_playlist: [{ ...own, dirId: 201 }, { ...own, tid: 901, dirId: 205 }] };
     if (method === 'CgiGetPlaylistFavInfo') return { v_list: [], hasmore: 0 };
     return { subcode: 5, songlist: [] };
   });
-  assert.equal((await lib.playlists())[0].mine, false);
+  assert.deepEqual((await lib.playlists()).map(p => [p.id, p.mine]), [['901', false]]);
   await assert.rejects(lib.liked({}), /rejected/);
 });
 
@@ -208,7 +217,35 @@ test('playlists without dirType (current QQ response) are editable', async () =>
     if (method === 'AddSonglist') return ok;
     throw new Error(method);
   });
-  assert.deepEqual((await lib.playlists()).map(p => [p.id, p.mine]), [['900', true], ['901', false]]);
+  assert.deepEqual((await lib.playlists()).map(p => [p.id, p.mine]), [['900', true]]);
   assert.equal((await lib.createPlaylist({ name: 'Mine' })).id, '900');
   await lib.addToPlaylist({ id: '900', trackIds: ['song1'] });
+});
+
+test('owned playlist tolerates uploaded songs and fewer rows than the reported total', async () => {
+  const { lib, calls } = setup((method, p) => {
+    if (method === 'GetPlaylistByUin') return { v_playlist: [own] };
+    assert.equal(method, 'CgiGetDiss');
+    assert.equal(p.song_num, 1000);
+    return { dirinfo: { title: 'Mine' }, total_song_num: 3, songlist: [{ mid: 'song1' }, { mid: '', title: 'Uploaded file' }], hasmore: 0 };
+  });
+  assert.deepEqual((await lib.playlist({ id: '900' })).tracks.map(t => t.id), ['song1']);
+  assert.equal(calls.filter(c => c.method === 'CgiGetDiss').length, 1);
+});
+
+test('saved playlist uses CgiGetDiss when public CGI would refuse it', async () => {
+  const { lib } = setup((method, p) => {
+    if (method === 'GetPlaylistByUin') return { v_playlist: [own] };
+    assert.equal(method, 'CgiGetDiss');
+    assert.equal(p.disstid, 901); assert.equal(p.enc_host_uin, 'encrypted');
+    return { dirinfo: { title: 'Private CGI' }, total_song_num: 1, songlist: [{ mid: 'song1' }], hasmore: 0 };
+  }, signed, { cgi: async () => { throw new Error('QQ Music: 0'); } });
+  const result = await lib.playlist({ id: '901' });
+  assert.equal(result.name, 'Private CGI');
+  assert.deepEqual(result.tracks.map(t => t.id), ['song1']);
+});
+
+test('saved playlist reports an error when both sources refuse it', async () => {
+  const { lib } = setup(method => method === 'GetPlaylistByUin' ? { v_playlist: [own] } : { code: -100006 }, signed, { cgi: async () => { throw new Error('QQ Music: 10'); } });
+  await assert.rejects(lib.playlist({ id: '901' }), /QQ Music: 10/);
 });
