@@ -78,14 +78,25 @@ test('playlist edit resolves owned directory and rejects system lists', async ()
   assert.equal(calls.filter(c => c.method === 'AddSonglist').length, 1);
 });
 
-test('playlist pages and public response map tracks', async () => {
+test('owned and saved playlists load every authenticated page before public CGI', async () => {
   const { lib } = setup((method, p) => {
     if (method === 'GetPlaylistByUin') return { v_playlist: [own] };
     assert.equal(method, 'CgiGetDiss');
+    assert.equal(p.enc_host_uin, 'encrypted');
     return { dirinfo: { title: 'Mine' }, total_song_num: 2, songlist: [{ mid: p.song_begin ? 'song2' : 'song1' }], hasmore: p.song_begin ? 0 : 1 };
-  });
+  }, signed, { cgi: async () => { assert.fail('authenticated playlists must not use public CGI'); } });
   assert.deepEqual((await lib.playlist({ id: '900' })).tracks.map(t => t.id), ['song1', 'song2']);
+  const saved = await lib.playlist({ id: '901' });
+  assert.deepEqual([saved.name, saved.mine, saved.tracks.map(t => t.id)], ['Mine', false, ['song1', 'song2']]);
+});
+
+test('non-owned playlist falls back to public CGI when CgiGetDiss fails', async () => {
+  const { lib } = setup(method => {
+    if (method === 'GetPlaylistByUin') return { v_playlist: [own] };
+    return { code: 1 };
+  });
   assert.equal((await lib.playlist({ id: '901' })).name, 'Public');
+  await assert.rejects(lib.playlist({ id: '900' }), /rejected/);
 });
 
 test('rename preserves settings and verifies them', async () => {
@@ -222,11 +233,11 @@ test('owned playlist tolerates uploaded songs and fewer rows than the reported t
   assert.equal(calls.filter(c => c.method === 'CgiGetDiss').length, 1);
 });
 
-test('saved playlist falls back to CgiGetDiss when the CGI refuses it', async () => {
+test('saved playlist uses CgiGetDiss when public CGI would refuse it', async () => {
   const { lib } = setup((method, p) => {
     if (method === 'GetPlaylistByUin') return { v_playlist: [own] };
     assert.equal(method, 'CgiGetDiss');
-    assert.equal(p.disstid, 901); assert.equal('enc_host_uin' in p, false);
+    assert.equal(p.disstid, 901); assert.equal(p.enc_host_uin, 'encrypted');
     return { dirinfo: { title: 'Private CGI' }, total_song_num: 1, songlist: [{ mid: 'song1' }], hasmore: 0 };
   }, signed, { cgi: async () => { throw new Error('QQ Music: 0'); } });
   const result = await lib.playlist({ id: '901' });
@@ -236,5 +247,5 @@ test('saved playlist falls back to CgiGetDiss when the CGI refuses it', async ()
 
 test('saved playlist reports an error when both sources refuse it', async () => {
   const { lib } = setup(method => method === 'GetPlaylistByUin' ? { v_playlist: [own] } : { code: -100006 }, signed, { cgi: async () => { throw new Error('QQ Music: 10'); } });
-  await assert.rejects(lib.playlist({ id: '901' }), /rejected/);
+  await assert.rejects(lib.playlist({ id: '901' }), /QQ Music: 10/);
 });

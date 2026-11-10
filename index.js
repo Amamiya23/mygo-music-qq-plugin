@@ -617,15 +617,16 @@ export function createLibrary({ qqAuthRpc, qqReadSession, qqAuthCgi, cgi, trackO
     const pid = idNumber(id, 'playlist ID');
     const s = await account();
     const entry = (await owned(s)).find(p => String(p.tid) === String(pid));
-    if (!entry) {
-      // This CGI refuses some public playlists ("check privacy error") that CgiGetDiss still serves.
-      const info = await cgi('/qzone/fcg-bin/fcg_ucc_getcdinfo_byids_cp.fcg', { disstid: pid, type: 1, json: 1, utf8: 1, onlysong: 0, new_format: 1 }).then(body => array(body.cdlist, 'playlist')[0], () => null);
-      if (info) return { ...asPlaylist({ ...info, tid: pid }), tracks: playable(info.songlist) };
-      const { first, tracks } = await allSongs(s, pid, 0);
-      return { ...asPlaylist({ ...(first.dirinfo || {}), tid: pid, total_song_num: first.total_song_num }), tracks };
+    try {
+      const { first, tracks } = await allSongs(s, pid, 0, await encrypted(s));
+      return { ...asPlaylist({ ...(first.dirinfo || {}), tid: pid, total_song_num: first.total_song_num }, !!entry && editable(entry)), tracks };
+    } catch (error) {
+      if (entry) throw error;
+      const body = await cgi('/qzone/fcg-bin/fcg_ucc_getcdinfo_byids_cp.fcg', { disstid: pid, type: 1, json: 1, utf8: 1, onlysong: 0, new_format: 1 });
+      const info = array(body.cdlist, 'playlist')[0];
+      if (!info) throw new Error('QQ Music playlist unavailable');
+      return { ...asPlaylist({ ...info, tid: pid }), tracks: playable(info.songlist) };
     }
-    const { first, tracks } = await allSongs(s, pid, 0, await encrypted(s));
-    return { ...asPlaylist({ ...(first.dirinfo || {}), tid: pid, total_song_num: first.total_song_num }, editable(entry)), tracks };
   }
   async function isLiked({ ids }) {
     if (!Array.isArray(ids)) throw new Error('Invalid song IDs');
