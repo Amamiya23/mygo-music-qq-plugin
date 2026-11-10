@@ -608,12 +608,20 @@ export function createLibrary({ qqAuthRpc, qqReadSession, qqAuthCgi, cgi, trackO
     const pid = idNumber(id, 'playlist ID');
     const s = await account();
     const entry = (await owned(s)).find(p => String(p.tid) === String(pid));
-    if (!entry) {
+    const legacy = async () => {
       const body = await cgi('/qzone/fcg-bin/fcg_ucc_getcdinfo_byids_cp.fcg', { disstid: pid, type: 1, json: 1, utf8: 1, onlysong: 0, new_format: 1 });
       const info = array(body.cdlist, 'playlist')[0];
       if (!info) throw new Error('QQ Music playlist unavailable');
       return { ...asPlaylist({ ...info, tid: pid }), tracks: tracks(info.songlist) };
+    };
+    try {
+      return await paged(s, pid, entry);
+    } catch (error) {
+      if (entry) throw error;
+      return legacy();
     }
+  }
+  async function paged(s, pid, entry) {
     const euin = await encrypted(s), result = [], seen = new Set();
     let first;
     for (let offset = 0; offset < 10000;) {
@@ -625,7 +633,7 @@ export function createLibrary({ qqAuthRpc, qqReadSession, qqAuthCgi, cgi, trackO
       if (items.length) seen.add(items[0].id);
       result.push(...items);
       const total = Number(data.total_song_num || 0);
-      if (!hasMore(data) && (total === 0 || result.length >= total)) return { ...asPlaylist({ ...(first.dirinfo || {}), tid: pid, total_song_num: first.total_song_num }, editable(entry)), tracks: result };
+      if (!hasMore(data) && (total === 0 || result.length >= total)) return { ...asPlaylist({ ...(first.dirinfo || {}), tid: pid, total_song_num: first.total_song_num }, !!entry && editable(entry)), tracks: result };
       if (!items.length) throw new Error('QQ Music playlist incomplete');
       offset += items.length;
     }

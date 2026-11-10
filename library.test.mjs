@@ -77,7 +77,17 @@ test('playlist pages and public response map tracks', async () => {
     return { dirinfo: { title: 'Mine' }, total_song_num: 2, songlist: [{ mid: p.song_begin ? 'song2' : 'song1' }], hasmore: p.song_begin ? 0 : 1 };
   });
   assert.deepEqual((await lib.playlist({ id: '900' })).tracks.map(t => t.id), ['song1', 'song2']);
+  const saved = await lib.playlist({ id: '901' });
+  assert.deepEqual([saved.name, saved.mine, saved.tracks.map(t => t.id)], ['Mine', false, ['song1', 'song2']]);
+});
+
+test('non-owned playlist falls back to public CGI when CgiGetDiss fails', async () => {
+  const { lib } = setup(method => {
+    if (method === 'GetPlaylistByUin') return { v_playlist: [own] };
+    return { code: 1 };
+  });
   assert.equal((await lib.playlist({ id: '901' })).name, 'Public');
+  await assert.rejects(lib.playlist({ id: '900' }), /rejected/);
 });
 
 test('rename preserves settings and verifies them', async () => {
